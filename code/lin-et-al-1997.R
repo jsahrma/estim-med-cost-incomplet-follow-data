@@ -35,12 +35,12 @@ probab_cens_mod <- c(rep(.08, times = study_length-1), .28)
 
 set.seed(577522)
 
-surv_time <- runif(npt, 0, study_length)
-## surv_time <- rexp(npt, 1 / exp_surv_mean)
+## surv_time <- runif(npt, 0, study_length)
+surv_time <- rexp(npt, 1 / exp_surv_mean)
 cens_time <- sample(1:10, npt, TRUE, probab_cens_low)
 
 dat <- tibble::tibble(
-  i = rep(1:study_length, times = npt),
+  i = rep(0:(study_length-1), times = npt),
   j = i + 1,
   T = rep(surv_time, each = study_length),
   U = rep(cens_time, each = study_length),
@@ -79,4 +79,4 @@ dat <- tibble::tibble(
     cc = cb + cd + cx
 )
 
-readr::write_csv(dat, "dat.csv")
+readr::write_csv(dat, "../output/dat.csv")
