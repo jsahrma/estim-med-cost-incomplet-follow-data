@@ -17,11 +17,18 @@
 
 library(dplyr)
 library(purrr)
+library(survival)
+
+
+# Function definitions -----------------------------------------------
+
+total_costs_ea <- function() {
+}
 
 
 # Constant definitions -----------------------------------------------
 
-npt <- 1e4
+npt <- 100
 study_length <- 10
 exp_surv_mean <- 6
 base_costs <- c(min = 1000, max = 3000)
@@ -35,238 +42,107 @@ probab_cens_mod <- c(rep(.08, times = study_length-1), .28)
 
 set.seed(577522)
 
-## surv_time <- runif(npt, 0, study_length)
-surv_time <- rexp(npt, 1 / exp_surv_mean)
-## cens_time <- sample(1:10, npt, TRUE, probab_cens_low)
-cens_time <- rep(10, times = npt)
+person_ds <- dplyr::tibble(
+  id = 1:npt,
+  surv_time = runif(npt, 0, study_length),
+  ## surv_time <- rexp(npt, 1 / exp_surv_mean),
+  cens_time = sample(1:10, npt, replace = TRUE, probab_cens_low),
+  fu_time = pmin(surv_time, cens_time),
+  fu_status = as.integer(surv_time == fu_time)
+)
 
-dat <- tibble::tibble(
-  id = rep(1:npt, each = study_length),
+person_ds <- dplyr::bind_rows(
+  dplyr::tibble(
+    id = 1, surv_time = 5.5, cens_time = 4.75,
+    fu_time = pmin(surv_time, cens_time),
+    fu_status = as.integer(surv_time == fu_time)
+    ),
+  dplyr::filter(person_ds, id > 1)
+)
+
+interval_ds <- dplyr::tibble(
+  id = rep(person_ds$id, each = study_length),
   i = rep(0:(study_length-1), times = npt),
   j = i + 1,
-  T = rep(surv_time, each = study_length),
-  U = rep(cens_time, each = study_length),
-  X = pmin(T, U),
-  dt = as.integer(T <= U),
-  stat = dplyr::case_when(
-    X < i ~ "z",
-    j < T & T < (j+1) ~ "w",
-    i < T & T < j ~ "x",
-    i < U & U < j ~ "c",
+  surv_time = rep(person_ds$surv_time, each = study_length),
+  cens_time = rep(person_ds$cens_time, each = study_length),
+  fu_time = rep(person_ds$fu_time, each = study_length),
+  fu_status = rep(person_ds$fu_status, each = study_length),
+  status = dplyr::case_when(
+    fu_status == 1 & surv_time < i ~ "y",
+    fu_status == 0 & cens_time < i ~ "d",
+    fu_status == 1 & i < surv_time & surv_time < j ~ "x",
+    fu_status == 1 & j < surv_time & surv_time < j + 1 ~ "w",
+    fu_status == 0 & i < cens_time & cens_time < j & surv_time - cens_time < 1 ~ "cw",
+    fu_status == 0 & i < cens_time & cens_time <= j ~ "c",
     TRUE ~ "o"
   ),
+  pb =
+    ifelse(status == "y", 0,
+      ifelse(status == "d", 0,
+        ifelse(status %in% c("c", "cw", "x"), fu_time - i,
+          1))),
+  pd = ifelse(i == 0, pb, 0),
+  px =
+    ifelse(status == "x", fu_time - i,
+      ifelse(status == "w", j - (fu_time - 1),
+        ifelse(status == "cw", cens_time - (surv_time - 1),
+          0))),
   cb_ = runif(npt * study_length, base_costs["min"], base_costs["max"]),
   cd_ = rep(runif(npt, diagn_costs["min"], diagn_costs["max"]), each = study_length),
   cx_ = rep(runif(npt, death_costs["min"], death_costs["max"]), each = study_length),
+  cb = ifelse(fu_status == 0 & cens_time < i, NA, cb_ * pb),
+  cd = ifelse(fu_status == 0 & cens_time < i, NA, cd_ * pd),
+  cx = ifelse(fu_status == 0 & cens_time < i, NA, cx_ * px),
+  cc = ifelse(fu_status == 0 & cens_time < i, NA, cb + cd + cx)
+)
+
+readr::write_csv(interval_ds, "../output/interval_ds.csv")
+
+## readr::write_csv(dat, "../output/dat.csv")
+
+
+# $\hat{S}_k
+
+km <- survival::survfit(
+  survival::Surv(fu_time, fu_status) ~ 1, data = person_ds) %>%
+  summary()
+
+Sk <- dplyr::tibble(ak = floor(km$time), survival = km$surv) %>%
+  dplyr::group_by(ak) %>%
+  dplyr::summarise(survival = dplyr::last(survival)) %>%
+  pull(survival)
+Sk <- c(1, Sk[-study_length])
+
+kmdat <- data.frame(ak = floor(km$time), survival = km$surv)
+Sk <- aggregate(kmdat, by = list(kmdat$ak), min)
+
+Sk <- aggregate(survival ~ ak, data = kmdat, FUN = min)
+
+km <- summary(survival::survfit(survival::Surv(fu_time, fu_status) ~ 1, data = person_ds))
+km_estim <- data.frame(time = )
+probab_surv_to_interval_start <- 
+
+probab_surv_to_interval_start <- cbind(
+  data.frame(interval = 1, surv = 1),
+  data.frame(interval = km_estim$time))
+
+km <- summary(survival::survfit(survival::Surv(fu_time, fu_status) ~ 1, data = person_ds))
+km_estim <- dplyr::tibble(
+  time = km$time, surv = km$surv, interval_end = ceiling(time), interval = interval_end + 1
+)
+
+probab_surv_to_interval_start <- km_estim %>%
+  dplyr::group_by(interval) %>%
+  dplyr::summarise(surv_interval_start = dplyr::last(surv))
+
+probab_surv_to_interval_start <- dplyr::tibble(
+  interval = 1, surv_interval_start = 1
 ) %>%
-  dplyr::mutate(
-    pb =
-      ifelse(stat %in% c("o", "w"), 1,
-        ifelse(stat %in% c("c", "x"), X - i,
-          0)),
-    pd =
-      ifelse(i == 0 & stat %in% c("o", "w"), 1,
-        ifelse(i == 0 & stat %in% c("c", "x"), X - i,
-          0)),
-    px =
-      ifelse(stat == "w", j - (T - 1),
-        ifelse(stat == "x", T - i,
-          0)),
-    cb = cb_ * pb,
-    cd = cd_ * pd,
-    cx = cx_ * px,
-    cc = cb + cd + cx
-)
+  dplyr::bind_rows(
+    km_estim %>%
+      dplyr::filter(interval <= study_length) %>%
+      dplyr::group_by(interval) %>%
+      dplyr::summarise(surv_interval_start = dplyr::last(surv))
+  )
 
-readr::write_csv(dat, "../output/dat.csv")
-
-i_costs <- dat %>%
-  dplyr::group_by(j) %>%
-  dplyr::summarise(i_costs = mean(cc))
-i_costs
-
-# uniform distribution
-##        j i_costs
-##    <dbl>   <dbl>
-##  1     1  13392.  13400
-##  2     2   3699.   3700
-##  3     3   3503.   3500
-##  4     4   3306.   3300
-##  5     5   3089.   3100
-##  6     6   2902.   2900
-##  7     7   2698.   2700
-##  8     8   2502.   2500
-##  9     9   2293.   2300
-## 10    10   1103.   1100
-# exponential distribution
-##        j i_costs
-##    <dbl>   <dbl>
-##  1     1  13877.
-##  2     2   3948.
-##  3     3   3349.
-##  4     4   2835.
-##  5     5   2402.
-##  6     6   2025.
-##  7     7   1723.
-##  8     8   1453.
-##  9     9   1237.
-## 10    10   1045.
-
-total_costs <- dat %>%
-  dplyr::group_by(id) %>%
-  dplyr::summarise(total_cc = sum(cc)) %>%
-  dplyr::pull(total_cc)
-mean(total_costs)
-
-
-(0.1 * 20000) + 2000 + 10000 +
-.9*0.1*20000 + .9*2000 +
-.8*0.1*20000 + .8*2000 +
-.7*0.1*20000 + .7*2000 +
-.6*0.1*20000 + .6*2000 +
-.5*0.1*20000 + .5*2000 +
-.4*0.1*20000 + .4*2000 +
-.3*0.1*20000 + .3*2000 +
-.2*0.1*20000 + .2*2000 +
-.1*0.1*20000 + .1*2000
-
-sum(12000, seq(3600, 2000, by = -200))
-
-(0.1 * 20000) + 2000 + 10000 +
-0.1*20000 + .9*2000 +
-0.1*20000 + .8*2000 +
-0.1*20000 + .7*2000 +
-0.1*20000 + .6*2000 +
-0.1*20000 + .5*2000 +
-0.1*20000 + .4*2000 +
-0.1*20000 + .3*2000 +
-0.1*20000 + .2*2000 +
-0.1*20000 + .1*2000
-
-.9 * 12000 + .1 * 30000 +
-  .8 * 2000 + .1 * 20000 +
-  .7 * 2000 + .1 * 20000 +
-  .6 * 2000 + .1 * 20000 +
-  .5 * 2000 + .1 * 20000 +
-  .4 * 2000 + .1 * 20000 +
-  .3 * 2000 + .1 * 20000 +
-  .2 * 2000 + .1 * 20000 +
-  .1 * 2000 + .1 * 20000 +
-  .0 * 2000 + .1 * 20000
-# 39000
-
-.9 * 12000 + .1 * 21000 +
-  .8 * 2000 + .1 * 21000 +
-  .7 * 2000 + .1 * 21000 +
-  .6 * 2000 + .1 * 21000 +
-  .5 * 2000 + .1 * 21000 +
-  .4 * 2000 + .1 * 21000 +
-  .3 * 2000 + .1 * 21000 +
-  .2 * 2000 + .1 * 21000 +
-  .1 * 2000 + .1 * 21000 +
-  .0 * 2000 + .1 * 21000
-# 39000
-
-.9 * 12000 + .1 * 32000 +
-  .8 * 2000 + .1 * 20000 +
-  .7 * 2000 + .1 * 20000 +
-  .6 * 2000 + .1 * 20000 +
-  .5 * 2000 + .1 * 20000 +
-  .4 * 2000 + .1 * 20000 +
-  .3 * 2000 + .1 * 20000 +
-  .2 * 2000 + .1 * 20000 +
-  .1 * 2000 + .1 * 20000 +
-  .0 * 2000 + .1 * 20000
-# 39200
-
-.9 * 12000 + .1 * 32000 +
-  .8 * 2000 + .1 * 22000 +
-  .7 * 2000 + .1 * 22000 +
-  .6 * 2000 + .1 * 22000 +
-  .5 * 2000 + .1 * 22000 +
-  .4 * 2000 + .1 * 22000 +
-  .3 * 2000 + .1 * 22000 +
-  .2 * 2000 + .1 * 22000 +
-  .1 * 2000 + .1 * 22000 +
-  .0 * 2000 + .1 * 22000
-# 41000
-
-.9 * 12000 + .1 * 16000 +
-  .8 * 2000 + .1 * 21000 +
-  .7 * 2000 + .1 * 21000 +
-  .6 * 2000 + .1 * 21000 +
-  .5 * 2000 + .1 * 21000 +
-  .4 * 2000 + .1 * 21000 +
-  .3 * 2000 + .1 * 21000 +
-  .2 * 2000 + .1 * 21000 +
-  .1 * 2000 + .1 * 21000 +
-  .0 * 2000 + .1 * 21000
-# 38500
-
-seq(.9, 0, -.1) * c(12000, rep(2000, 9)) + rep(.1, 10) * c(16000, rep(21000, 9))
-
-.9 * 12000 + .1 * 26000 +
-  .8 * 2000 + .1 * 21000 +
-  .7 * 2000 + .1 * 21000 +
-  .6 * 2000 + .1 * 21000 +
-  .5 * 2000 + .1 * 21000 +
-  .4 * 2000 + .1 * 21000 +
-  .3 * 2000 + .1 * 21000 +
-  .2 * 2000 + .1 * 21000 +
-  .1 * 2000 + .1 * 21000 +
-  .0 * 2000 + .1 * 11000
-# 38500
-
-seq(.9, 0, -.1) * c(12000, rep(2000, 9)) + rep(.1, 10) * c(26000, rep(21000, 8), 11000)
-
-5*2000 + 20000 + .9*10000
-# 39000
-5*2000 + .95*20000 + .95*10000
-# 38500
-
-sum((1 - punif(1:10, min = 0, max = 10)) * c(12000, rep(2000, 9))) +
-sum(dunif(1:10, min = 0, max = 10) * c(30000, rep(20000, 9)))
-
-sum((1 - pexp(1:10, 1 / exp_surv_mean)) * c(12000, rep(2000, 9))) +
-sum(dexp(1:10, 1 / exp_surv_mean) * c(30000, rep(20000, 9)))
-
-
-6*2000 + pexp(10, 1/exp_surv_mean)*20000 + (1-pexp(1, 1/exp_surv_mean))*10000
-
-sum((1 - pexp(1:10, 1 / exp_surv_mean)) * c(12000, rep(2000, 9))) +
-sum(dexp(1:10, 1 / exp_surv_mean) * rep(21000, 10))
-
-
-# proportion of sample surviving to start of each interval
-1 - pexp(1:10, rate = 1 / exp_surv_mean)
-
-# proportion of sample dying in each interval
-pexp(1:10, rate = 1 / exp_surv_mean) - pexp(0:9, rate = 1 / exp_surv_mean)
-
-
-
-sum((1 - pexp(1:10, rate = 1 / exp_surv_mean)) * c(12000, rep(2000, 9)) +
-(pexp(1:10, rate = 1 / exp_surv_mean) - pexp(0:9, rate = 1 / exp_surv_mean)) * 20000)
-
-sum((1 - pexp(1:10, rate = 1 / exp_surv_mean)) * c(12000, rep(2000, 9)) +
-(pexp(1:10, rate = 1 / exp_surv_mean) - pexp(0:9, rate = 1 / exp_surv_mean)) * 21000)
-
-
-(1 - pexp(1:10, rate = 1 / exp_surv_mean)) * c(12000, rep(2000, 9)) +
-(pexp(1:10, rate = 1 / exp_surv_mean) - pexp(0:9, rate = 1 / exp_surv_mean)) * 20000 +
-(pexp(1:10, rate = 1 / exp_surv_mean) - pexp(0:9, rate = 1 / exp_surv_mean)) * 2000
-
-sum((1 - pexp(1:10, rate = 1 / exp_surv_mean)) * c(12000, rep(2000, 9)) + (pexp(1:10, rate = 1 / exp_surv_mean) - pexp(0:9, rate = 1 / exp_surv_mean)) * 20000)
-
-
-sum(
-  (1 - pexp(1:10, rate = 1 / exp_surv_mean)) * c(12000, rep(2000, 9)) +
-(pexp(1:10, rate = 1 / exp_surv_mean) - pexp(0:9, rate = 1 / exp_surv_mean)) * 20000 +
-(pexp(1:10, rate = 1 / exp_surv_mean) - pexp(0:9, rate = 1 / exp_surv_mean)) * 1000
-)
-
-sum(
-  (1 - pexp(1:10, rate = 1 / exp_surv_mean)) * c(12000, rep(2000, 9)) +
-(pexp(1:10, rate = 1 / exp_surv_mean) - pexp(0:9, rate = 1 / exp_surv_mean)) * 20000 +
-(1 - (pexp(1:10, rate = 1 / exp_surv_mean) - pexp(0:9, rate = 1 / exp_surv_mean))) * 2000
-)
