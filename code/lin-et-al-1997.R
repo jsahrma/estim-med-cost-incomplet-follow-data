@@ -20,12 +20,6 @@ library(purrr)
 library(survival)
 
 
-# Function definitions -----------------------------------------------
-
-total_costs_ea <- function() {
-}
-
-
 # Constant definitions -----------------------------------------------
 
 n_pt <- 100
@@ -35,67 +29,92 @@ base_costs <- c(min = 1000, max = 3000)
 diagn_costs <- c(min = 5000, max = 15000)
 death_costs <- c(min = 10000, max = 30000)
 probab_cens_low <- c(rep(.05, times = study_length-1), .55)
-probab_cens_mod <- c(rep(.08, times = study_length-1), .28)
+probab_cens_moderat <- c(rep(.08, times = study_length-1), .28)
+
+
+# Function definitions -----------------------------------------------
+
+total_costs_ea <- function() {
+}
+
+unif_surv <- function() {
+  runif(n_pt, 0, study_length)
+}
+unif_exp <- function() {
+  rexp(n_pt, 1 / exp_surv_mean)
+}
+
+low_cens_start <- function() {
+  sample(1:study_length, n_pt, replace = TRUE, probab_cens_low)
+}
+moderat_cens_start <- function() {
+  sample(1:study_length, n_pt, replace = TRUE, probab_cens_moderat)
+}
 
 
 # Simulations --------------------------------------------------------
 
 set.seed(577522)
 
-person_ds <- dplyr::tibble(
-  id = 1:n_pt,
-  surv_time = runif(n_pt, 0, study_length),
-  ## surv_time <- rexp(n_pt, 1 / exp_surv_mean),
-  cens_time = sample(1:10, n_pt, replace = TRUE, probab_cens_low),
-  fu_time = pmin(surv_time, cens_time),
-  fu_status = as.integer(surv_time == fu_time)
-)
-
-person_ds <- dplyr::bind_rows(
-  dplyr::tibble(
-    id = 1, surv_time = 5.5, cens_time = 4.75,
+simul_cost_hist <- function(f_surv, f_cens) {
+  pt_ds <- dplyr::tibble(
+    id = 1:n_pt,
+    surv_time = f_surv(),
+    cens_time = f_cens(),
     fu_time = pmin(surv_time, cens_time),
     fu_status = as.integer(surv_time == fu_time)
-    ),
-  dplyr::filter(person_ds, id > 1)
-)
+  )
 
-interval_ds <- dplyr::tibble(
-  id = rep(person_ds$id, each = study_length),
-  i = rep(0:(study_length-1), times = n_pt),
-  j = i + 1,
-  surv_time = rep(person_ds$surv_time, each = study_length),
-  cens_time = rep(person_ds$cens_time, each = study_length),
-  fu_time = rep(person_ds$fu_time, each = study_length),
-  fu_status = rep(person_ds$fu_status, each = study_length),
-  status = dplyr::case_when(
-    fu_status == 1 & surv_time < i ~ "y",
-    fu_status == 0 & cens_time <= i ~ "d",
-    fu_status == 1 & i < surv_time & surv_time < j ~ "x",
-    fu_status == 1 & j < surv_time & surv_time < j + 1 ~ "w",
-    fu_status == 0 & i < cens_time & cens_time < j & surv_time - cens_time < 1 ~ "cw",
-    fu_status == 0 & i <= cens_time & cens_time <= j ~ "c",
-    TRUE ~ "o"
-  ),
-  pb =
-    ifelse(status == "y", 0,
-      ifelse(status == "d", 0,
-        ifelse(status %in% c("c", "cw", "x"), fu_time - i,
-          1))),
-  pd = ifelse(i == 0, pb, 0),
-  px =
-    ifelse(status == "x", fu_time - i,
-      ifelse(status == "w", j - (fu_time - 1),
-        ifelse(status == "cw", cens_time - (surv_time - 1),
-          0))),
-  cb_ = runif(n_pt * study_length, base_costs["min"], base_costs["max"]),
-  cd_ = rep(runif(n_pt, diagn_costs["min"], diagn_costs["max"]), each = study_length),
-  cx_ = rep(runif(n_pt, death_costs["min"], death_costs["max"]), each = study_length),
-  cb = ifelse(fu_status == 0 & cens_time <= i, NA, cb_ * pb),
-  cd = ifelse(fu_status == 0 & cens_time <= i, NA, cd_ * pd),
-  cx = ifelse(fu_status == 0 & cens_time <= i, NA, cx_ * px),
-  cc = ifelse(fu_status == 0 & cens_time <= i, NA, cb + cd + cx)
-)
+  interval_ds <- dplyr::tibble(
+    id = rep(pt_ds$id, each = study_length),
+    i = rep(0:(study_length-1), times = n_pt),
+    j = i + 1,
+    surv_time = rep(pt_ds$surv_time, each = study_length),
+    cens_time = rep(pt_ds$cens_time, each = study_length),
+    fu_time = rep(pt_ds$fu_time, each = study_length),
+    fu_status = rep(pt_ds$fu_status, each = study_length),
+    status = dplyr::case_when(
+      fu_status == 1 & surv_time < i                     ~ "y",
+      fu_status == 0 & cens_time <= i                    ~ "d",
+      fu_status == 1 & i < surv_time & surv_time < j     ~ "x",
+      fu_status == 1 & j < surv_time & surv_time < j + 1 ~ "w",
+      fu_status == 0 & i < cens_time & cens_time < j
+      & surv_time - cens_time < 1                        ~ "cw",
+      fu_status == 0 & i <= cens_time & cens_time <= j   ~ "c",
+      TRUE                                               ~ "o"
+    ),
+    under_obs_at_interval_start = fu_time > i,
+    under_obs_at_interval_end = fu_time > j,
+    pb =
+      ifelse(status == "y", 0,
+        ifelse(status == "d", 0,
+          ifelse(status %in% c("c", "cw", "x"), fu_time - i,
+            1))),
+    pd = ifelse(i == 0, pb, 0),
+    px =
+      ifelse(status == "x", fu_time - i,
+        ifelse(status == "w", j - (fu_time - 1),
+          ifelse(status == "cw", cens_time - (surv_time - 1),
+            0))),
+    cb_ = runif(
+      n_pt * study_length, base_costs["min"], base_costs["max"]),
+    cd_ = rep(
+      runif(n_pt, diagn_costs["min"], diagn_costs["max"]),
+      each = study_length),
+    cx_ = rep(
+      runif(n_pt, death_costs["min"], death_costs["max"]),
+      each = study_length),
+    cb = ifelse(fu_status == 0 & cens_time <= i, NA, cb_ * pb),
+    cd = ifelse(fu_status == 0 & cens_time <= i, NA, cd_ * pd),
+    cx = ifelse(fu_status == 0 & cens_time <= i, NA, cx_ * px),
+    cc = ifelse(fu_status == 0 & cens_time <= i, NA, cb + cd + cx)
+  )
+
+  list(pt_ds = pt_ds, interval_ds = interval_ds)
+}
+
+res <- simul_cost_hist(unif_surv, low_cens_start)
+
 
 readr::write_csv(interval_ds, "../output/interval_ds.csv")
 
@@ -125,9 +144,6 @@ probab_surv_to_interval_start <- dplyr::tibble(
   )
 
 # $\hat{E}_k$
-
-interval_ds2 <- interval_ds %>%
-  dplyr::mutate(under_obs_at_interval_start = fu_time > i, .before = 1)
 
 estim_total_costs_interval <- interval_ds2 %>%
   dplyr::filter(!is.na(cc)) %>%
