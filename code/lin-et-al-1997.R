@@ -10,7 +10,7 @@
 # 9192444.
 #
 # John Sahrmann
-# 20220529
+# 20220530
 
 
 # Setup --------------------------------------------------------------
@@ -22,7 +22,7 @@ library(survival)
 
 # Constant definitions -----------------------------------------------
 
-n_pt <- 100
+n_pt <- 1000
 study_length <- 10
 exp_surv_mean <- 6
 base_costs <- c(min = 1000, max = 3000)
@@ -37,6 +37,7 @@ probab_cens_moderat <- c(rep(.08, times = study_length-1), .28)
 total_costs_ea <- function() {
 }
 
+# Survival time generating functions.
 unif_surv <- function() {
   runif(n_pt, 0, study_length)
 }
@@ -44,6 +45,7 @@ unif_exp <- function() {
   rexp(n_pt, 1 / exp_surv_mean)
 }
 
+# Censoring time generating functions.
 low_cens_start <- function() {
   sample(1:study_length, n_pt, replace = TRUE, probab_cens_low)
 }
@@ -85,29 +87,51 @@ simul_cost_hist <- function(f_surv, f_cens) {
     ),
     under_obs_at_interval_start = fu_time > i,
     under_obs_at_interval_end = fu_time > j,
-    pb =
+    propor_base =
       ifelse(status == "y", 0,
         ifelse(status == "d", 0,
           ifelse(status %in% c("c", "cw", "x"), fu_time - i,
             1))),
-    pd = ifelse(i == 0, pb, 0),
-    px =
+    propor_diagn = ifelse(i == 0, propor_base, 0),
+    propor_death =
       ifelse(status == "x", fu_time - i,
         ifelse(status == "w", j - (fu_time - 1),
           ifelse(status == "cw", cens_time - (surv_time - 1),
             0))),
-    cb_ = runif(
+    base_costs_raw = runif(
       n_pt * study_length, base_costs["min"], base_costs["max"]),
-    cd_ = rep(
+    diagn_costs_raw = rep(
       runif(n_pt, diagn_costs["min"], diagn_costs["max"]),
       each = study_length),
-    cx_ = rep(
+    death_costs_raw = rep(
       runif(n_pt, death_costs["min"], death_costs["max"]),
       each = study_length),
-    cb = ifelse(fu_status == 0 & cens_time <= i, NA, cb_ * pb),
-    cd = ifelse(fu_status == 0 & cens_time <= i, NA, cd_ * pd),
-    cx = ifelse(fu_status == 0 & cens_time <= i, NA, cx_ * px),
-    cc = ifelse(fu_status == 0 & cens_time <= i, NA, cb + cd + cx)
+    base_costs = ifelse(
+      fu_status == 0 & cens_time <= i,
+      NA, base_costs_raw * propor_base),
+    diagn_costs = ifelse(
+      fu_status == 0 & cens_time <= i,
+      NA, diagn_costs_raw * propor_diagn),
+    death_costs = ifelse(
+      fu_status == 0 & cens_time <= i,
+      NA, death_costs_raw * propor_death),
+    total_costs = ifelse(
+      fu_status == 0 & cens_time <= i,
+      NA, base_costs + diagn_costs + death_costs),
+    propor_base_no_cens =
+      ifelse(surv_time < i, 0,
+        ifelse(i < surv_time & surv_time < j, surv_time - i,
+          1)),
+    propor_diagn_no_cens = ifelse(i == 0, propor_base_no_cens, 0),
+    propor_death_no_cens =
+      ifelse(i < surv_time & surv_time < j, surv_time - i,
+        ifelse(j < surv_time & surv_time < j + 1, j - (surv_time - 1),
+          0)),
+    base_costs_no_cens = base_costs_raw * propor_base_no_cens,
+    diagn_costs_no_cens = diagn_costs_raw * propor_diagn_no_cens,
+    death_costs_no_cens = death_costs_raw * propor_death_no_cens,
+    total_costs_no_cens = (
+      base_costs_no_cens + diagn_costs_no_cens + death_costs_no_cens)
   )
 
   list(pt_ds = pt_ds, interval_ds = interval_ds)
@@ -116,7 +140,13 @@ simul_cost_hist <- function(f_surv, f_cens) {
 res <- simul_cost_hist(unif_surv, low_cens_start)
 
 
-readr::write_csv(interval_ds, "../output/interval_ds.csv")
+readr::write_csv(res$interval_ds, "../output/interval_ds.csv")
+
+pt_total_costs <- res$interval_ds %>%
+  dplyr::group_by(id) %>%
+  dplyr::summarise(fu_total_costs_no_cens = sum(total_costs_no_cens))
+mean(pt_total_costs$fu_total_costs_no_cens)
+
 
 ## readr::write_csv(dat, "../output/dat.csv")
 
