@@ -1,27 +1,28 @@
-# Header -------------------------------------------------------------
-#
-# Replicate simulation results from Lin et al. (1997):
-# <https://dlin.web.unc.edu/wp-content/uploads/sites/1568/2013/04/LinEA97.pdf>.
-#
-# Reference:
-#
-# Lin DY, Feuer EJ, Etzioni R, Wax Y. Estimating medical costs from
-# incomplete follow-up data. Biometrics. 1997 Jun;53(2):419-34. PMID:
-# 9192444.
-#
-# John Sahrmann
-# 20220530
+## Header ------------------------------------------------------------
+##
+## Replicate simulation results from Lin et al. (1997):
+## <https://dlin.web.unc.edu/wp-content/uploads/sites/1568/2013/04/LinEA97.pdf>.
+##
+## Reference:
+##
+## Lin DY, Feuer EJ, Etzioni R, Wax Y. Estimating medical costs from
+## incomplete follow-up data. Biometrics. 1997 Jun;53(2):419-34. PMID:
+## 9192444.
+##
+## John Sahrmann
+## 20220530
 
 
-# Setup --------------------------------------------------------------
+## Setup -------------------------------------------------------------
 
 library(dplyr)
 library(purrr)
 library(survival)
 
 
-# Constant definitions -----------------------------------------------
+## Constant definitions ----------------------------------------------
 
+n_simul <- 50000
 n_pt <- 1000
 study_length <- 10
 exp_surv_mean <- 6
@@ -34,10 +35,45 @@ probab_cens_moderat <- c(rep(.08, times = study_length-1), .28)
 
 # Function definitions -----------------------------------------------
 
+# Survival time generating functions.
+unif_surv <- function() {
+  runif(n_pt, 0, study_length)
+}
+unif_exp <- function() {
+  rexp(n_pt, 1 / exp_surv_mean)
+}
+
+# Censoring time generating functions.
+low_cens_start <- function() {
+  sample(1:study_length, n_pt, replace = TRUE, probab_cens_low)
+}
+moderat_cens_start <- function() {
+  sample(1:study_length, n_pt, replace = TRUE, probab_cens_moderat)
+}
+
 total_costs_true <- function(data) {
   data %>%
     dplyr::group_by(id) %>%
     dplyr::summarise(pt_total_costs = sum(total_costs_no_cens)) %>%
+    dplyr::pull(pt_total_costs) %>%
+    mean()
+}
+
+total_costs_full_sampl <- function(data) {
+  data %>%
+    dplyr::group_by(id) %>%
+    dplyr::summarise(
+      pt_total_costs = sum(total_costs, na.rm = TRUE)
+    ) %>%
+    dplyr::pull(pt_total_costs) %>%
+    mean()
+}
+
+total_costs_uncens_sampl <- function(data) {
+  data %>%
+    dplyr::filter(fu_status == 1) %>%
+    dplyr::group_by(id) %>%
+    dplyr::summarise(pt_total_costs = sum(total_costs)) %>%
     dplyr::pull(pt_total_costs) %>%
     mean()
 }
@@ -156,44 +192,29 @@ total_costs_eb <- function(pt_ds, interval_ds) {
   sum()
 }
 
-# Survival time generating functions.
-unif_surv <- function() {
-  runif(n_pt, 0, study_length)
-}
-unif_exp <- function() {
-  rexp(n_pt, 1 / exp_surv_mean)
-}
-
-# Censoring time generating functions.
-low_cens_start <- function() {
-  sample(1:study_length, n_pt, replace = TRUE, probab_cens_low)
-}
-moderat_cens_start <- function() {
-  sample(1:study_length, n_pt, replace = TRUE, probab_cens_moderat)
-}
-
 
 # Simulations --------------------------------------------------------
 
-set.seed(577522)
-
-simul_cost_hist <- function(f_surv, f_cens) {
-  pt_ds <- dplyr::tibble(
+simul_pt <- function(f_surv, f_cens) {
+  dplyr::tibble(
     id = 1:n_pt,
     surv_time = f_surv(),
     cens_time = f_cens(),
     fu_time = pmin(surv_time, cens_time),
     fu_status = as.integer(surv_time == fu_time)
   )
+}
 
-  interval_ds <- dplyr::tibble(
-    id = rep(pt_ds$id, each = study_length),
+
+simul_cost_hist <- function(data) {
+  dplyr::tibble(
+    id = rep(data$id, each = study_length),
     i = rep(0:(study_length-1), times = n_pt),
     j = i + 1,
-    surv_time = rep(pt_ds$surv_time, each = study_length),
-    cens_time = rep(pt_ds$cens_time, each = study_length),
-    fu_time = rep(pt_ds$fu_time, each = study_length),
-    fu_status = rep(pt_ds$fu_status, each = study_length),
+    surv_time = rep(data$surv_time, each = study_length),
+    cens_time = rep(data$cens_time, each = study_length),
+    fu_time = rep(data$fu_time, each = study_length),
+    fu_status = rep(data$fu_status, each = study_length),
     status = dplyr::case_when(
       fu_status == 1 & surv_time < i                     ~ "y",
       fu_status == 0 & cens_time <= i                    ~ "d",
@@ -204,8 +225,10 @@ simul_cost_hist <- function(f_surv, f_cens) {
       fu_status == 0 & i <= cens_time & cens_time <= j   ~ "c",
       TRUE                                               ~ "o"
     ),
-    under_obs_at_interval_start = !(status %in% c("d", "y")),
-    under_obs_at_interval_end = !(status %in% c("c", "d", "x", "y")),
+    # under_obs_at_interval_start = !(status %in% c("d", "y")),
+    # under_obs_at_interval_end = !(status %in% c("c", "d", "x", "y")),
+    under_obs_at_interval_start = !(status %in% c("d")),
+    under_obs_at_interval_end = !(status %in% c("c", "d")),
     propor_base =
       ifelse(status == "y", 0,
         ifelse(status == "d", 0,
@@ -252,9 +275,21 @@ simul_cost_hist <- function(f_surv, f_cens) {
     total_costs_no_cens = (
       base_costs_no_cens + diagn_costs_no_cens + death_costs_no_cens)
   )
-
-  list(pt_ds = pt_ds, interval_ds = interval_ds)
 }
+
+
+set.seed(577522)
+
+pt_ds <- simul_pt(unif_surv, low_cens_start)
+cost_hist_ds <- simul_cost_hist(pt_ds)
+
+E <- total_costs_true(cost_hist_ds)
+E_F <- total_costs_full_sampl(cost_hist_ds)
+E_U <- total_costs_uncens_sampl(cost_hist_ds)
+E_A <- total_costs_ea(pt_ds, cost_hist_ds)
+E_B <- total_costs_eb(pt_ds, cost_hist_ds)
+
+E; E_F; E_U; E_A; E_B
 
 res <- simul_cost_hist(unif_surv, low_cens_start)
 
