@@ -39,7 +39,7 @@ probab_cens_moderat <- c(rep(.08, times = study_length-1), .28)
 unif_surv <- function() {
   runif(n_pt, 0, study_length)
 }
-unif_exp <- function() {
+exp_surv <- function() {
   rexp(n_pt, 1 / exp_surv_mean)
 }
 
