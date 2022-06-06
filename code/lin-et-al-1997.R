@@ -34,7 +34,126 @@ probab_cens_moderat <- c(rep(.08, times = study_length-1), .28)
 
 # Function definitions -----------------------------------------------
 
-total_costs_ea <- function() {
+total_costs_true <- function(data) {
+  data %>%
+    dplyr::group_by(id) %>%
+    dplyr::summarise(pt_total_costs = sum(total_costs_no_cens)) %>%
+    dplyr::pull(pt_total_costs) %>%
+    mean()
+}
+
+total_costs_ea <- function(pt_ds, interval_ds) {
+  # Get Kaplan-Meier estimates for survival.
+  km <- summary(
+    survival::survfit(
+      survival::Surv(fu_time, fu_status) ~ 1, data = pt_ds))
+  km_estim <- dplyr::tibble(
+    time = km$time, surv = km$surv, interval_end = ceiling(time),
+    interval = interval_end + 1
+  )
+  # Produce a data set containing the survival estimates at the start
+  # of each interval. For the first interval, this is simply one. For
+  # subsequent intervals, use the survival estimate at the time point
+  # closest to, but before, the start of the interval.
+  probab_surv_to_interval_start <- dplyr::tibble(
+    interval = 1, surv_interval_start = 1
+  ) %>%
+    dplyr::bind_rows(
+      km_estim %>%
+        dplyr::filter(interval <= study_length) %>%
+        dplyr::group_by(interval) %>%
+        dplyr::summarise(surv_interval_start = dplyr::last(surv))
+    )
+
+  # Produce a data set containing interval-specific total costs
+  # conditional on patients surviving to the start of each interval.
+  total_costs_per_interval <- interval_ds %>%
+    dplyr::filter(!is.na(total_costs)) %>%
+    dplyr::group_by(j) %>%
+    dplyr::summarise(
+      total_costs_in_interval = (
+        sum(under_obs_at_interval_start * total_costs)
+        / sum(under_obs_at_interval_start))
+  )
+
+  # Compute the estimator.
+  probab_surv_to_interval_start %>%
+    dplyr::inner_join(
+      total_costs_per_interval, by = c(interval = "j")
+    ) %>%
+    dplyr::mutate(
+      surv_weighted_total_costs_in_interval = (
+        surv_interval_start * total_costs_in_interval)
+  ) %>%
+  dplyr::pull(surv_weighted_total_costs_in_interval) %>%
+  sum()
+}
+
+total_costs_eb <- function(pt_ds, interval_ds) {
+  # Get Kaplan-Meier estimates for survival.
+  km <- summary(
+    survival::survfit(
+      survival::Surv(fu_time, fu_status) ~ 1, data = pt_ds))
+  km_estim <- dplyr::tibble(
+    time = km$time, surv = km$surv, interval_end = ceiling(time),
+    interval = interval_end + 1
+  )
+  # Produce a data set containing the survival estimates at the start
+  # of each interval. For the first interval, this is simply one. For
+  # subsequent intervals, use the survival estimate at the time point
+  # closest to, but before, the start of the interval.
+  probab_surv_to_interval_start <- dplyr::tibble(
+    interval = 1, surv_interval_start = 1
+  ) %>%
+    dplyr::bind_rows(
+      km_estim %>%
+        dplyr::filter(interval <= study_length) %>%
+        dplyr::group_by(interval) %>%
+        dplyr::summarise(surv_interval_start = dplyr::last(surv))
+    )
+
+  # Produce a data set containing interval-specific total costs
+  # conditional on patients surviving to just after the start of each
+  # interval.
+  n_pt_under_obs_at_interval_end <- tapply(
+    interval_ds$under_obs_at_interval_end,
+    interval_ds$j,
+    sum
+  )
+  any_pt_in_last_interval <- (
+    n_pt_under_obs_at_interval_end[[study_length]] > 0)
+  if (any_pt_in_last_interval) {
+    total_costs_per_interval <- interval_ds %>%
+      dplyr::filter(!is.na(total_costs)) %>%
+      dplyr::group_by(j) %>%
+      dplyr::summarise(
+        total_costs_in_interval = (
+          sum(under_obs_at_interval_end * total_costs)
+          / sum(under_obs_at_interval_end))
+      )
+  } else {
+    total_costs_per_interval <- interval_ds %>%
+      dplyr::filter(j < study_length) %>%
+      dplyr::filter(!is.na(total_costs)) %>%
+      dplyr::group_by(j) %>%
+      dplyr::summarise(
+        total_costs_in_interval = (
+          sum(under_obs_at_interval_end * total_costs)
+          / sum(under_obs_at_interval_end))
+      )
+  }
+
+  # Compute the estimator.
+  probab_surv_to_interval_start %>%
+    dplyr::inner_join(
+      total_costs_per_interval, by = c(interval = "j")
+    ) %>%
+    dplyr::mutate(
+      surv_weighted_total_costs_in_interval = (
+        surv_interval_start * total_costs_in_interval)
+  ) %>%
+  dplyr::pull(surv_weighted_total_costs_in_interval) %>%
+  sum()
 }
 
 # Survival time generating functions.
@@ -85,8 +204,8 @@ simul_cost_hist <- function(f_surv, f_cens) {
       fu_status == 0 & i <= cens_time & cens_time <= j   ~ "c",
       TRUE                                               ~ "o"
     ),
-    under_obs_at_interval_start = fu_time > i,
-    under_obs_at_interval_end = fu_time > j,
+    under_obs_at_interval_start = !(status %in% c("d", "y")),
+    under_obs_at_interval_end = !(status %in% c("c", "d", "x", "y")),
     propor_base =
       ifelse(status == "y", 0,
         ifelse(status == "d", 0,
@@ -142,54 +261,6 @@ res <- simul_cost_hist(unif_surv, low_cens_start)
 
 readr::write_csv(res$interval_ds, "../output/interval_ds.csv")
 
-pt_total_costs <- res$interval_ds %>%
-  dplyr::group_by(id) %>%
-  dplyr::summarise(fu_total_costs_no_cens = sum(total_costs_no_cens))
-mean(pt_total_costs$fu_total_costs_no_cens)
-
-
-## readr::write_csv(dat, "../output/dat.csv")
-
-crude_total_costs <- interval_ds %>%
-  dplyr::group_by(id) %>%
-  summarise(total_costs = sum(cc, na.rm = TRUE))
-mean(crude_total_costs$total_costs)
-
-
-# $\hat{S}_k$
-
-km <- summary(survival::survfit(survival::Surv(fu_time, fu_status) ~ 1, data = person_ds))
-km_estim <- dplyr::tibble(
-  time = km$time, surv = km$surv, interval_end = ceiling(time), interval = interval_end + 1
-)
-
-probab_surv_to_interval_start <- dplyr::tibble(
-  interval = 1, surv_interval_start = 1
-) %>%
-  dplyr::bind_rows(
-    km_estim %>%
-      dplyr::filter(interval <= study_length) %>%
-      dplyr::group_by(interval) %>%
-      dplyr::summarise(surv_interval_start = dplyr::last(surv))
-  )
-
-# $\hat{E}_k$
-
-estim_total_costs_interval <- interval_ds2 %>%
-  dplyr::filter(!is.na(cc)) %>%
-  dplyr::group_by(j) %>%
-  dplyr::summarise(
-    total_costs_interval = (
-      sum(under_obs_at_interval_start * cc)
-      / sum(under_obs_at_interval_start))
-  )
-
-# $\hat{E}_A$
-
-estim_total_costs <- probab_surv_to_interval_start %>%
-  dplyr::inner_join(estim_total_costs_interval, by = c(interval = "j")) %>%
-  dplyr::mutate(
-    surv_weighted_total_costs_interval = surv_interval_start * total_costs_interval
-  ) %>%
-  dplyr::pull(surv_weighted_total_costs_interval) %>%
-  sum()
+total_costs_true(res$interval_ds)
+total_costs_ea(res$pt_ds, res$interval_ds)
+total_costs_eb(res$pt_ds, res$interval_ds)
