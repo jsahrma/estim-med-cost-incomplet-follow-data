@@ -10,7 +10,7 @@
 ## 9192444.
 ##
 ## John Sahrmann
-## 20220607
+## 20220630
 
 
 ## Setup -------------------------------------------------------------
@@ -44,22 +44,6 @@ exp_surv <- function() {
 }
 
 # Censoring time generating functions.
-# low_cens_end <- function() {
-#   sample(1:study_length, n_pt, replace = TRUE, probab_cens_low)
-#   - 1e-6
-# }
-# moderat_cens_end <- function() {
-#   sample(1:study_length, n_pt, replace = TRUE, probab_cens_moderat)
-#   - 1e-6
-# }
-
-# low_cens_start <- function() {
-#   sample(1:study_length, n_pt, replace = TRUE, probab_cens_low)
-# }
-# moderat_cens_start <- function() {
-#   sample(1:study_length, n_pt, replace = TRUE, probab_cens_moderat)
-# }
-
 low_cens_end <- function() {
   sample(1:study_length, n_pt, replace = TRUE, probab_cens_low)
 }
@@ -75,6 +59,8 @@ moderat_cens_start <- function() {
   sample(1:study_length, n_pt, replace = TRUE, probab_cens_moderat) +
   1e-6
 }
+
+# Total costs estimators
 
 total_costs_true <- function(data) {
   data %>%
@@ -185,7 +171,6 @@ total_costs_eb <- function(pt_ds, interval_ds) {
     n_pt_under_obs_at_interval_end[[study_length]] > 0)
   if (any_pt_in_last_interval) {
     total_costs_per_interval <- interval_ds %>%
-      # dplyr::filter(!is.na(total_costs)) %>%
       dplyr::filter(under_obs_at_interval_end) %>%
       dplyr::group_by(j) %>%
       dplyr::summarise(
@@ -195,8 +180,6 @@ total_costs_eb <- function(pt_ds, interval_ds) {
       )
   } else {
     total_costs_per_interval <- interval_ds %>%
-      # dplyr::filter(j < study_length) %>%
-      # dplyr::filter(!is.na(total_costs)) %>%
       dplyr::filter(under_obs_at_interval_end) %>%
       dplyr::group_by(j) %>%
       dplyr::summarise(
@@ -252,13 +235,8 @@ simul_cost_hist <- function(data) {
       fu_status == 0 & i <= cens_time & cens_time <= j   ~ "c",
       TRUE                                               ~ "o"
     ),
-    # under_obs_at_interval_start = (fu_time >= i),
     under_obs_at_interval_start = (fu_time > i),
     under_obs_at_interval_end = (fu_time > j),
-    # under_obs_at_interval_start = !(status %in% c("d", "y")),
-    # under_obs_at_interval_end = !(status %in% c("c", "d", "x", "y")),
-    # under_obs_at_interval_start = !(status %in% c("d")),
-    # under_obs_at_interval_end = !(status %in% c("c", "d")),
     propor_base =
       ifelse(status == "y", 0,
         ifelse(status == "d", 0,
@@ -290,10 +268,6 @@ simul_cost_hist <- function(data) {
     total_costs = ifelse(
       fu_status == 0 & cens_time <= i,
       NA, base_costs + diagn_costs + death_costs),
-    # base_costs = base_costs_raw * propor_base,
-    # diagn_costs = diagn_costs_raw * propor_diagn,
-    # death_costs = death_costs_raw * propor_death,
-    # total_costs = base_costs + diagn_costs + death_costs,
     propor_base_no_cens =
       ifelse(surv_time < i, 0,
         ifelse(i < surv_time & surv_time < j, surv_time - i,
